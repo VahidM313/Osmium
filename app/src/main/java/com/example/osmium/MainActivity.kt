@@ -1,6 +1,7 @@
 package com.example.osmium
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -31,15 +32,28 @@ import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.List
+import androidx.compose.ui.platform.LocalContext
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.Insert
+import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.Update
+import com.google.android.gms.maps.model.LatLng
+import com.google.maps.android.compose.GoogleMap
+import com.google.maps.android.compose.Marker
+import com.google.maps.android.compose.MarkerState
 import kotlinx.coroutines.flow.Flow
+import kotlin.math.pow
+import androidx.compose.runtime.collectAsState
+import com.google.android.gms.maps.model.CameraPosition
+import com.google.maps.android.compose.rememberCameraPositionState
+
 
 class MainActivity : ComponentActivity() {
     private lateinit var telephonyManager: TelephonyManager
@@ -53,6 +67,7 @@ class MainActivity : ComponentActivity() {
 
         telephonyManager = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+        setupLocationUpdates()
         database = AppDatabase.getInstance(this)
 
         setContent {
@@ -66,14 +81,14 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        setupLocationUpdates()
         startCellInfoCollection()
+        startCellInfoProcessing()
     }
 
     @Composable
     fun MainScreen() {
         var selectedTabIndex by remember { mutableStateOf(0) }
-        val tabs = listOf("Cell Info", "Database Rows")
+        val tabs = listOf("Available Cell", "Database")
 
         Column {
             TabRow(selectedTabIndex = selectedTabIndex) {
@@ -93,9 +108,74 @@ class MainActivity : ComponentActivity() {
             }
 
             when (selectedTabIndex) {
-                0 -> CellInfoScreen()
+                0 -> AvailableCellScreen()
                 1 -> DatabaseRowsScreen()
             }
+        }
+    }
+
+    @Composable
+    fun AvailableCellScreen() {
+        var selectedSubTabIndex by remember { mutableStateOf(0) }
+        val subTabs = listOf("Cell Info", "Map")
+
+        Column {
+            TabRow(selectedTabIndex = selectedSubTabIndex) {
+                subTabs.forEachIndexed { index, title ->
+                    Tab(
+                        selected = selectedSubTabIndex == index,
+                        onClick = { selectedSubTabIndex = index },
+                        text = { Text(text = title) }
+                    )
+                }
+            }
+
+            when (selectedSubTabIndex) {
+                0 -> CellInfoScreen()
+                1 -> CellTowerMapScreen()
+            }
+        }
+    }
+
+    @Composable
+    fun CellTowerMapScreen() {
+        val context = LocalContext.current
+        val cellTowers by database.cellTowerDao().getAllCellTowers().collectAsState(initial = emptyList())
+        var currentLocation by remember { mutableStateOf(LatLng(35.6892, 51.3890)) }
+        var isMapReady by remember { mutableStateOf(false) }
+
+        val cameraPositionState = rememberCameraPositionState {
+            position = CameraPosition.fromLatLngZoom(currentLocation, 17f)
+        }
+
+        LaunchedEffect(Unit) {
+            val location = lastLocation
+            if (location != null) {
+                currentLocation = LatLng(location.latitude, location.longitude)
+                isMapReady = true
+            }
+        }
+
+        if (isMapReady) {
+            GoogleMap(
+                modifier = Modifier.fillMaxSize(),
+                cameraPositionState = cameraPositionState
+            ) {
+                Marker(
+                    state = MarkerState(position = currentLocation),
+                    title = "Your Location"
+                )
+
+                cellTowers.forEach { tower ->
+                    Marker(
+                        state = MarkerState(position = LatLng(tower.latitude, tower.longitude)),
+                        title = "Cell Tower ${tower.cellId}",
+                        snippet = "Operator: ${tower.operator}, Gen: ${tower.gen}"
+                    )
+                }
+            }
+        } else {
+            Text("Loading map...")
         }
     }
 
@@ -105,7 +185,14 @@ class MainActivity : ComponentActivity() {
 
         LaunchedEffect(Unit) {
             while (true) {
-                cellInfoList = getCellInfo()
+                cellInfoList = getCellInfo().filter { cellInfo ->
+                    when (cellInfo) {
+                        is android.telephony.CellInfoGsm -> getOperatorName(cellInfo.cellIdentity.mobileNetworkOperator) != "Unknown Operator"
+                        is android.telephony.CellInfoLte -> getOperatorName(cellInfo.cellIdentity.mobileNetworkOperator) != "Unknown Operator"
+                        is android.telephony.CellInfoWcdma -> getOperatorName(cellInfo.cellIdentity.mobileNetworkOperator) != "Unknown Operator"
+                        else -> false
+                    }
+                }
                 delay(1000) // Update every second
             }
         }
@@ -119,30 +206,74 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     fun DatabaseRowsScreen() {
-        val cellInfoEntities by database.cellInfoDao().getAllCellInfo().collectAsState(initial = emptyList())
+        var selectedTabIndex by remember { mutableStateOf(0) }
+        val tabs = listOf("Cell Info", "Cell Towers")
 
-        LazyColumn {
-            items(cellInfoEntities) { entity ->
-                Text(text = formatDatabaseRow(entity))
+        Column {
+            TabRow(selectedTabIndex = selectedTabIndex) {
+                tabs.forEachIndexed { index, title ->
+                    Tab(
+                        selected = selectedTabIndex == index,
+                        onClick = { selectedTabIndex = index },
+                        text = { Text(text = title) }
+                    )
+                }
+            }
+
+            when (selectedTabIndex) {
+                0 -> CellInfoTab()
+                1 -> CellTowerTab()
             }
         }
     }
 
-    private fun formatDatabaseRow(entity: CellInfoEntity): String {
-        return "ID: ${entity.id}, CID: ${entity.cid}, MNC: ${entity.mnc}, MCC: ${entity.mcc}, " +
-                "RSS: ${entity.rss}, Lat: ${entity.latitude}, Long: ${entity.longitude}"
+    @Composable
+    fun CellInfoTab() {
+        val cellInfoEntities by database.cellInfoDao().getAllCellInfo().collectAsState(initial = emptyList())
+
+        LazyColumn {
+            items(cellInfoEntities) { entity ->
+                Text(text = formatCellInfoEntity(entity))
+            }
+        }
+    }
+
+    private fun formatCellInfoEntity(entity: CellInfoEntity): String {
+        return "ID: ${entity.id}, CID: ${entity.cid}, Operator: ${entity.operator}, Gen: ${entity.gen} " +
+                "MNC: ${entity.mnc}, MCC: ${entity.mcc}, RSS: ${entity.rss}, " +
+                "Distance: ${String.format("%.2f", entity.distance)}m, " +
+                "Lat: ${String.format("%.4f", entity.latitude)}, " +
+                "Long: ${String.format("%.4f", entity.longitude)}\n"
+    }
+
+    @Composable
+    fun CellTowerTab() {
+        val cellTowers by database.cellTowerDao().getAllCellTowers().collectAsState(initial = emptyList())
+
+        LazyColumn {
+            items(cellTowers) { tower ->
+                Text(text = formatCellTower(tower))
+            }
+        }
+    }
+
+    private fun formatCellTower(tower: CellTowerEntity): String {
+        return "CID: ${tower.cellId}, Operator: ${tower.operator}, Gen: ${tower.gen}, " +
+                "MNC: ${tower.mnc}, MCC: ${tower.mcc}, " +
+                "Lat: ${String.format("%.4f", tower.latitude)}, " +
+                "Long: ${String.format("%.4f", tower.longitude)}\n"
     }
 
     private fun setupLocationUpdates() {
         val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000)
             .setWaitForAccurateLocation(false)
-            .setMinUpdateIntervalMillis(500)
-            .setMinUpdateDistanceMeters(2f)
+            .setMinUpdateIntervalMillis(1000)
+            .setMinUpdateDistanceMeters(5f)
             .build()
 
-        locationCallback = object : LocationCallback() {
+        val locationCallback = object : LocationCallback() {
             override fun onLocationResult(locationResult: LocationResult) {
-                locationResult.lastLocation?.let { location ->
+                for (location in locationResult.locations) {
                     lastLocation = location
                 }
             }
@@ -176,46 +307,96 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun startCellInfoProcessing() {
+        lifecycleScope.launch(Dispatchers.Default) {
+            while (isActive) {
+                processCellInfo()
+                delay(60000) // Run every minute
+            }
+        }
+    }
+
+    private suspend fun processCellInfo() {
+        val cellInfoGroups = database.cellInfoDao().getAllCellInfoGrouped()
+        for (group in cellInfoGroups) {
+            if (group.cid != null) {
+                val cellInfoList = database.cellInfoDao().getCellInfoByCid(group.cid)
+                if (cellInfoList.size >= 3) {
+                    performMultilaterationAndSave(cellInfoList)
+                }
+            }
+        }
+    }
+
+
     private suspend fun saveCellInfo(cellInfo: CellInfo, location: Location) {
         val cellInfoEntity = when (cellInfo) {
             is android.telephony.CellInfoGsm -> {
                 val cellIdentity = cellInfo.cellIdentity
-                CellInfoEntity(
-                    cid = cellIdentity.cid,
-                    mnc = cellIdentity.mncString,
-                    mcc = cellIdentity.mccString,
-                    rss = cellInfo.cellSignalStrength.dbm,
-                    latitude = location.latitude,
-                    longitude = location.longitude
-                )
+                val trss: Int = cellInfo.cellSignalStrength.dbm
+                val operator = getOperatorName(cellIdentity.mobileNetworkOperator)
+                if (operator != "Unknown Operator") {
+                    CellInfoEntity(
+                        cid = cellIdentity.cid,
+                        operator = operator,
+                        gen = "GSM (2G)",
+                        mnc = cellIdentity.mncString,
+                        mcc = cellIdentity.mccString,
+                        rss = trss,
+                        distance = calculateDistance(trss,"GSM"),
+                        latitude = location.latitude,
+                        longitude = location.longitude
+                    )
+                } else null
             }
             is android.telephony.CellInfoLte -> {
                 val cellIdentity = cellInfo.cellIdentity
-                CellInfoEntity(
-                    cid = cellIdentity.ci,
-                    mnc = cellIdentity.mncString,
-                    mcc = cellIdentity.mccString,
-                    rss = cellInfo.cellSignalStrength.dbm,
-                    latitude = location.latitude,
-                    longitude = location.longitude
-                )
+                val trss: Int = cellInfo.cellSignalStrength.dbm
+                val operator = getOperatorName(cellIdentity.mobileNetworkOperator)
+                if (operator != "Unknown Operator") {
+                    CellInfoEntity(
+                        cid = cellIdentity.ci,
+                        operator = operator,
+                        gen = "LTE (4G)",
+                        mnc = cellIdentity.mncString,
+                        mcc = cellIdentity.mccString,
+                        rss = trss,
+                        distance = calculateDistance(trss,"LTE"),
+                        latitude = location.latitude,
+                        longitude = location.longitude
+                    )
+                } else null
             }
             is android.telephony.CellInfoWcdma -> {
                 val cellIdentity = cellInfo.cellIdentity
-                CellInfoEntity(
-                    cid = cellIdentity.cid,
-                    mnc = cellIdentity.mncString,
-                    mcc = cellIdentity.mccString,
-                    rss = cellInfo.cellSignalStrength.dbm,
-                    latitude = location.latitude,
-                    longitude = location.longitude
-                )
+                val trss = cellInfo.cellSignalStrength.dbm
+                val operator = getOperatorName(cellIdentity.mobileNetworkOperator)
+                if (operator != "Unknown Operator") {
+                    CellInfoEntity(
+                        cid = cellIdentity.cid,
+                        operator = operator,
+                        gen = "WCDMA (3G)",
+                        mnc = cellIdentity.mncString,
+                        mcc = cellIdentity.mccString,
+                        rss = trss,
+                        distance = calculateDistance(trss,"WCDMA"),
+                        latitude = location.latitude,
+                        longitude = location.longitude
+                    )
+                } else null
             }
             else -> null
         }
 
         cellInfoEntity?.let {
-            database.cellInfoDao().insert(it)
+            val existingEntity = database.cellInfoDao().findExistingCellInfo(
+                it.cid, it.operator, it.gen, it.mnc, it.mcc, it.rss, it.distance, it.latitude, it.longitude
+            )
+
+            if (existingEntity == null) {
+                // Insert new entity
+                database.cellInfoDao().insert(it)
+            }
         }
     }
 
@@ -241,17 +422,63 @@ class MainActivity : ComponentActivity() {
         return when (cellInfo) {
             is android.telephony.CellInfoGsm -> {
                 val cellIdentity = cellInfo.cellIdentity
-                "GSM (2G): MCC=${cellIdentity.mccString} | MNC=${cellIdentity.mncString} |  LAC=${cellIdentity.lac} | CID=${cellIdentity.cid} | RSS=${cellInfo.cellSignalStrength.dbm} dBm"
+                val op = getOperatorName(cellIdentity.mobileNetworkOperator)
+                "GSM (2G): Operator=${op} | MCC=${cellIdentity.mccString} | MNC=${cellIdentity.mncString} |  LAC=${cellIdentity.lac} | CID=${cellIdentity.cid} | RSS=${cellInfo.cellSignalStrength.dbm} dBm\n"
             }
             is android.telephony.CellInfoLte -> {
                 val cellIdentity = cellInfo.cellIdentity
-                "LTE (4G): MCC=${cellIdentity.mccString} | MNC=${cellIdentity.mncString} | TAC=${cellIdentity.tac} | CID=${cellIdentity.ci} | RSS=${cellInfo.cellSignalStrength.dbm} dBm"
+                val op = getOperatorName(cellIdentity.mobileNetworkOperator)
+                "LTE (4G): Operator=${op} | MCC=${cellIdentity.mccString} | MNC=${cellIdentity.mncString} | TAC=${cellIdentity.tac} | CID=${cellIdentity.ci} | RSS=${cellInfo.cellSignalStrength.dbm} dBm\n"
             }
             is android.telephony.CellInfoWcdma -> {
                 val cellIdentity = cellInfo.cellIdentity
-                "WCDMA (3G): MCC=${cellIdentity.mccString} | MNC=${cellIdentity.mncString} | LAC=${cellIdentity.lac} | CID=${cellIdentity.cid} | RSS=${cellInfo.cellSignalStrength.dbm} dBm"
+                val op = getOperatorName(cellIdentity.mobileNetworkOperator)
+                "WCDMA (3G): Operator=${op} | MCC=${cellIdentity.mccString} | MNC=${cellIdentity.mncString} | LAC=${cellIdentity.lac} | CID=${cellIdentity.cid} | RSS=${cellInfo.cellSignalStrength.dbm} dBm\n"
             }
             else -> "Unsupported cell type"
+        }
+    }
+
+    private fun getOperatorName(code: String?): String {
+        return when (code) {
+            "43235" -> "MTN Irancell"
+            "43211" -> "IR-MCI"
+            "43220" -> "Rightel"
+            else -> "Unknown Operator"
+        }
+    }
+
+    private fun calculateDistance(rssi: Int, tech: String): Double {
+        val d0 = 1.0 // Reference distance in meters
+        val (pl_d0, pathLossExponent) = when (tech) {
+            "GSM" -> Pair(35.0, 3.75)
+            "WCDMA" -> Pair(40.0, 4.0)
+            "LTE" -> Pair(38.0, 3.95)
+            else -> Pair(0.0, 0.0)
+        }
+        return d0 * 10.0.pow((pl_d0 - rssi) / (10.0 * pathLossExponent))
+    }
+
+    private suspend fun performMultilaterationAndSave(cellInfoList: List<CellInfoEntity>) {
+        if (cellInfoList.size < 3) return
+
+        val points = cellInfoList.map { MultilaterationUtil.Point(it.latitude, it.longitude) }
+        val distances = cellInfoList.map { it.distance }
+
+        val result = MultilaterationUtil.performMultilateration(points, distances)
+
+        if (result != null) {
+            val cellTower = CellTowerEntity(
+                cellId = cellInfoList.first().cid,
+                operator = cellInfoList.first().operator,
+                gen = cellInfoList.first().gen,
+                mnc = cellInfoList.first().mnc,
+                mcc = cellInfoList.first().mcc,
+                latitude = result.latitude,
+                longitude = result.longitude
+            )
+
+            database.cellTowerDao().insert(cellTower)
         }
     }
 
@@ -265,29 +492,71 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Entity(tableName = "cell_info")
+@Entity(
+    tableName = "cell_info",
+    indices = [Index(value = ["cid", "operator", "gen", "mnc", "mcc", "rss", "distance", "latitude", "longitude"], unique = true)]
+)
 data class CellInfoEntity(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val cid: Int,
+    val operator: String,
+    val gen: String,
     val mnc: String?,
     val mcc: String?,
     val rss: Int,
+    val distance: Double,
     val latitude: Double,
     val longitude: Double
 )
 
 @Dao
 interface CellInfoDao {
-    @Insert
-    suspend fun insert(cellInfo: CellInfoEntity)
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insert(cellInfo: CellInfoEntity): Long
 
     @Query("SELECT * FROM cell_info ORDER BY id DESC")
     fun getAllCellInfo(): Flow<List<CellInfoEntity>>
+
+    @Query("SELECT * FROM cell_info WHERE cid = :cid AND operator = :operator AND gen = :gen AND mnc = :mnc AND mcc = :mcc AND rss = :rss AND distance = :distance AND latitude = :latitude AND longitude = :longitude LIMIT 1")
+    suspend fun findExistingCellInfo(cid: Int, operator: String, gen: String, mnc: String?, mcc: String?, rss: Int, distance: Double, latitude: Double, longitude: Double): CellInfoEntity?
+
+    @Update
+    suspend fun update(cellInfo: CellInfoEntity)
+
+    @Query("SELECT * FROM cell_info GROUP BY cid HAVING COUNT(*) >= 3")
+    suspend fun getAllCellInfoGrouped(): List<CellInfoEntity>
+
+    @Query("SELECT * FROM cell_info WHERE cid = :cid")
+    suspend fun getCellInfoByCid(cid: Int): List<CellInfoEntity>
 }
 
-@Database(entities = [CellInfoEntity::class], version = 1)
+@Entity(tableName = "cell_towers")
+data class CellTowerEntity(
+    @PrimaryKey val cellId: Int,
+    val operator: String,
+    val gen: String,
+    val mnc: String?,
+    val mcc: String?,
+    val latitude: Double,
+    val longitude: Double
+)
+
+@Dao
+interface CellTowerDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(cellTower: CellTowerEntity)
+
+    @Query("SELECT * FROM cell_towers")
+    fun getAllCellTowers(): Flow<List<CellTowerEntity>>
+
+    @Query("SELECT * FROM cell_towers WHERE cellId = :cellId LIMIT 1")
+    suspend fun getCellTowerById(cellId: Int): CellTowerEntity?
+}
+
+@Database(entities = [CellInfoEntity::class, CellTowerEntity::class], version = 7)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun cellInfoDao(): CellInfoDao
+    abstract fun cellTowerDao(): CellTowerDao
 
     companion object {
         @Volatile
@@ -304,7 +573,9 @@ abstract class AppDatabase : RoomDatabase() {
                 context.applicationContext,
                 AppDatabase::class.java,
                 "cell_info_database"
-            ).build()
+            )
+                .fallbackToDestructiveMigration()
+                .build()
         }
     }
 }

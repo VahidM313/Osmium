@@ -1,8 +1,8 @@
 {
   "formatVersion": 1,
   "database": {
-    "version": 1,
-    "identityHash": "9a5f2a20795f7d2614784616114dae51",
+    "version": 2,
+    "identityHash": "aa02e914e4f5a01b7f1112398e0fe850",
     "entities": [
       {
         "tableName": "cell_info",
@@ -69,14 +69,28 @@
             "id"
           ]
         },
-        "indices": [],
+        "indices": [
+          {
+            "name": "index_cell_info_cid_operator_gen_mnc_mcc",
+            "unique": true,
+            "columnNames": [
+              "cid",
+              "operator",
+              "gen",
+              "mnc",
+              "mcc"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_cell_info_cid_operator_gen_mnc_mcc` ON `${TABLE_NAME}` (`cid`, `operator`, `gen`, `mnc`, `mcc`)"
+          }
+        ],
         "foreignKeys": []
       }
     ],
     "views": [],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '9a5f2a20795f7d2614784616114dae51')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'aa02e914e4f5a01b7f1112398e0fe850')"
     ]
   }
 }
