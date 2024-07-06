@@ -74,6 +74,7 @@ class MainActivity : ComponentActivity() {
 
     }
 
+    //////////////////////////// UI ////////////////////////////
     @Composable
     fun MainScreen() {
         var selectedTabIndex by remember { mutableStateOf(0) }
@@ -236,14 +237,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun formatCellInfoEntity(entity: CellInfoEntity): String {
-        return "ID: ${entity.id}, CID: ${entity.cid}, Operator: ${entity.operator}, Gen: ${entity.gen} " +
-                "MNC: ${entity.mnc}, MCC: ${entity.mcc}, RSS: ${entity.rss}, " +
-                "Distance: ${String.format("%.2f", entity.distance)}m, " +
-                "Lat: ${String.format("%.5f", entity.latitude)}, " +
-                "Long: ${String.format("%.5f", entity.longitude)}\n"
-    }
-
     @Composable
     fun CellTowerTab() {
         val cellTowers by database.cellTowerDao().getAllCellTowers().collectAsState(initial = emptyList())
@@ -255,41 +248,20 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    //////////////////////////// Cell Info ////////////////////////////
+    private fun formatCellInfoEntity(entity: CellInfoEntity): String {
+        return "ID: ${entity.id}, CID: ${entity.cid}, Operator: ${entity.operator}, Gen: ${entity.gen} " +
+                "MNC: ${entity.mnc}, MCC: ${entity.mcc}, RSS: ${entity.rss}, " +
+                "Distance: ${String.format("%.2f", entity.distance)}m, " +
+                "Lat: ${String.format("%.5f", entity.latitude)}, " +
+                "Long: ${String.format("%.5f", entity.longitude)}\n"
+    }
+
     private fun formatCellTower(tower: CellTowerEntity): String {
         return "CID: ${tower.cellId}, Operator: ${tower.operator}, Gen: ${tower.gen}, " +
                 "MNC: ${tower.mnc}, MCC: ${tower.mcc}, " +
                 "Lat: ${String.format("%.5f", tower.latitude)}, " +
                 "Long: ${String.format("%.5f", tower.longitude)}\n"
-    }
-
-    private fun setupLocationUpdates() {
-        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000)
-            .setWaitForAccurateLocation(true)
-            .setMinUpdateIntervalMillis(2000)
-            .setMinUpdateDistanceMeters(10f)
-            .build()
-
-        val locationCallback = object : LocationCallback() {
-            override fun onLocationResult(locationResult: LocationResult) {
-                for (location in locationResult.locations) {
-                    lastLocation = location
-                }
-            }
-        }
-
-        if (ActivityCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-            ActivityCompat.requestPermissions(
-                this,
-                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
-                LOCATION_PERMISSION_REQUEST_CODE
-            )
-        } else {
-            fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
-        }
     }
 
     private fun startCellInfoCollection() {
@@ -323,7 +295,6 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-
 
     private suspend fun saveCellInfo(cellInfo: CellInfo, location: Location) {
         val cellInfoEntity = when (cellInfo) {
@@ -486,6 +457,37 @@ class MainActivity : ComponentActivity() {
             database.cellTowerDao().insert(cellTower)
         } else {
             Log.e("Multilateration", "Failed to perform multilateration")
+        }
+    }
+
+    //////////////////////////// GPS ////////////////////////////
+    private fun setupLocationUpdates() {
+        val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000)
+            .setWaitForAccurateLocation(true)
+            .setMinUpdateIntervalMillis(2000)
+            .setMinUpdateDistanceMeters(10f)
+            .build()
+
+        val locationCallback = object : LocationCallback() {
+            override fun onLocationResult(locationResult: LocationResult) {
+                for (location in locationResult.locations) {
+                    lastLocation = location
+                }
+            }
+        }
+
+        if (ActivityCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
+                LOCATION_PERMISSION_REQUEST_CODE
+            )
+        } else {
+            fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
         }
     }
 
