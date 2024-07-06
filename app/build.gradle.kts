@@ -73,6 +73,7 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview:1.6.8")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.6.4")
     implementation("com.google.android.gms:play-services-location:21.0.1")
+    implementation("org.apache.commons:commons-math3:3.6.1")
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)

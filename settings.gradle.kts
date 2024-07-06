@@ -1,8 +1,5 @@
 pluginManagement {
     repositories {
-        maven {
-            url = uri("https://maven.emad.dev/repository/maven-public/")
-        }
         google {
             content {
                 includeGroupByRegex("com\\.android.*")

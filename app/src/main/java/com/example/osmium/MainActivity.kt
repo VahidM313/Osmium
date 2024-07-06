@@ -28,6 +28,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import com.google.android.gms.location.*
 import android.os.Looper
+import android.util.Log
+import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
@@ -51,9 +53,12 @@ import com.google.maps.android.compose.MarkerState
 import kotlinx.coroutines.flow.Flow
 import kotlin.math.pow
 import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.Alignment
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.maps.android.compose.rememberCameraPositionState
-
+import androidx.compose.ui.graphics.Color
+import com.google.android.gms.maps.model.BitmapDescriptorFactory
+import com.google.maps.android.compose.MarkerInfoWindow
 
 class MainActivity : ComponentActivity() {
     private lateinit var telephonyManager: TelephonyManager
@@ -69,6 +74,8 @@ class MainActivity : ComponentActivity() {
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         setupLocationUpdates()
         database = AppDatabase.getInstance(this)
+        startCellInfoCollection()
+        startCellInfoProcessing()
 
         setContent {
             OsmiumTheme {
@@ -81,8 +88,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        startCellInfoCollection()
-        startCellInfoProcessing()
     }
 
     @Composable
@@ -141,30 +146,41 @@ class MainActivity : ComponentActivity() {
     fun CellTowerMapScreen() {
         val context = LocalContext.current
         val cellTowers by database.cellTowerDao().getAllCellTowers().collectAsState(initial = emptyList())
-        var currentLocation by remember { mutableStateOf(LatLng(35.6892, 51.3890)) }
+        var currentLocation by remember { mutableStateOf<LatLng?>(null) }
         var isMapReady by remember { mutableStateOf(false) }
 
         val cameraPositionState = rememberCameraPositionState {
-            position = CameraPosition.fromLatLngZoom(currentLocation, 17f)
+            position = CameraPosition.fromLatLngZoom(LatLng(0.0, 0.0), 10f)
         }
 
         LaunchedEffect(Unit) {
-            val location = lastLocation
-            if (location != null) {
-                currentLocation = LatLng(location.latitude, location.longitude)
-                isMapReady = true
+            while (currentLocation == null) {
+                val location = lastLocation
+                if (location != null) {
+                    currentLocation = LatLng(location.latitude, location.longitude)
+                    cameraPositionState.position = CameraPosition.fromLatLngZoom(currentLocation!!, 15f)
+                    isMapReady = true
+                }
+                delay(100) // Wait a bit before checking again
             }
         }
 
-        if (isMapReady) {
+        if (!isMapReady) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+        } else {
             GoogleMap(
                 modifier = Modifier.fillMaxSize(),
                 cameraPositionState = cameraPositionState
             ) {
-                Marker(
-                    state = MarkerState(position = currentLocation),
-                    title = "Your Location"
-                )
+                currentLocation?.let { location ->
+                    Marker(
+                        state = MarkerState(position = location),
+                        title = "Your Location",
+                        icon = BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_BLUE)
+                    )
+                }
 
                 cellTowers.forEach { tower ->
                     Marker(
@@ -174,8 +190,6 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
-        } else {
-            Text("Loading map...")
         }
     }
 
@@ -193,7 +207,7 @@ class MainActivity : ComponentActivity() {
                         else -> false
                     }
                 }
-                delay(1000) // Update every second
+                delay(500) // Update every second
             }
         }
 
@@ -242,8 +256,8 @@ class MainActivity : ComponentActivity() {
         return "ID: ${entity.id}, CID: ${entity.cid}, Operator: ${entity.operator}, Gen: ${entity.gen} " +
                 "MNC: ${entity.mnc}, MCC: ${entity.mcc}, RSS: ${entity.rss}, " +
                 "Distance: ${String.format("%.2f", entity.distance)}m, " +
-                "Lat: ${String.format("%.4f", entity.latitude)}, " +
-                "Long: ${String.format("%.4f", entity.longitude)}\n"
+                "Lat: ${String.format("%.5f", entity.latitude)}, " +
+                "Long: ${String.format("%.5f", entity.longitude)}\n"
     }
 
     @Composable
@@ -260,15 +274,15 @@ class MainActivity : ComponentActivity() {
     private fun formatCellTower(tower: CellTowerEntity): String {
         return "CID: ${tower.cellId}, Operator: ${tower.operator}, Gen: ${tower.gen}, " +
                 "MNC: ${tower.mnc}, MCC: ${tower.mcc}, " +
-                "Lat: ${String.format("%.4f", tower.latitude)}, " +
-                "Long: ${String.format("%.4f", tower.longitude)}\n"
+                "Lat: ${String.format("%.5f", tower.latitude)}, " +
+                "Long: ${String.format("%.5f", tower.longitude)}\n"
     }
 
     private fun setupLocationUpdates() {
         val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 1000)
-            .setWaitForAccurateLocation(false)
-            .setMinUpdateIntervalMillis(1000)
-            .setMinUpdateDistanceMeters(5f)
+            .setWaitForAccurateLocation(true)
+            .setMinUpdateIntervalMillis(2000)
+            .setMinUpdateDistanceMeters(10f)
             .build()
 
         val locationCallback = object : LocationCallback() {
@@ -311,7 +325,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch(Dispatchers.Default) {
             while (isActive) {
                 processCellInfo()
-                delay(60000) // Run every minute
+                delay(10000) // Run every minute
             }
         }
     }
@@ -319,11 +333,9 @@ class MainActivity : ComponentActivity() {
     private suspend fun processCellInfo() {
         val cellInfoGroups = database.cellInfoDao().getAllCellInfoGrouped()
         for (group in cellInfoGroups) {
-            if (group.cid != null) {
-                val cellInfoList = database.cellInfoDao().getCellInfoByCid(group.cid)
-                if (cellInfoList.size >= 3) {
-                    performMultilaterationAndSave(cellInfoList)
-                }
+            val cellInfoList = database.cellInfoDao().getCellInfoByCid(group.cid)
+            if (cellInfoList.size >= 3) {
+                performMultilaterationAndSave(cellInfoList)
             }
         }
     }
@@ -389,13 +401,17 @@ class MainActivity : ComponentActivity() {
         }
 
         cellInfoEntity?.let {
-            val existingEntity = database.cellInfoDao().findExistingCellInfo(
-                it.cid, it.operator, it.gen, it.mnc, it.mcc, it.rss, it.distance, it.latitude, it.longitude
-            )
+            val existingEntity = database.cellInfoDao().getMostRecentCellInfoByCid(it.cid)
 
-            if (existingEntity == null) {
-                // Insert new entity
+            if (existingEntity == null ||
+                !areLocationsEqual(existingEntity.latitude, existingEntity.longitude, it.latitude, it.longitude)) {
+                // Insert new entity only if it's a new cell ID or the location has changed
                 database.cellInfoDao().insert(it)
+            } else {
+                // Update the existing entity with new RSS and distance
+                existingEntity.rss = it.rss
+                existingEntity.distance = it.distance
+                database.cellInfoDao().update(existingEntity)
             }
         }
     }
@@ -448,6 +464,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun areLocationsEqual(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Boolean {
+        val threshold = 0.0001 // Adjust this value based on the desired precision
+        return Math.abs(lat1 - lat2) < threshold && Math.abs(lon1 - lon2) < threshold
+    }
+
     private fun calculateDistance(rssi: Int, tech: String): Double {
         val d0 = 1.0 // Reference distance in meters
         val (pl_d0, pathLossExponent) = when (tech) {
@@ -475,10 +496,12 @@ class MainActivity : ComponentActivity() {
                 mnc = cellInfoList.first().mnc,
                 mcc = cellInfoList.first().mcc,
                 latitude = result.latitude,
-                longitude = result.longitude
+                longitude = result.longitude,
             )
 
             database.cellTowerDao().insert(cellTower)
+        } else {
+            Log.e("Multilateration", "Failed to perform multilateration")
         }
     }
 
@@ -494,7 +517,7 @@ class MainActivity : ComponentActivity() {
 
 @Entity(
     tableName = "cell_info",
-    indices = [Index(value = ["cid", "operator", "gen", "mnc", "mcc", "rss", "distance", "latitude", "longitude"], unique = true)]
+    indices = [Index(value = ["cid", "operator", "gen", "mnc", "mcc","latitude", "longitude"], unique = true)]
 )
 data class CellInfoEntity(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
@@ -503,15 +526,15 @@ data class CellInfoEntity(
     val gen: String,
     val mnc: String?,
     val mcc: String?,
-    val rss: Int,
-    val distance: Double,
+    var rss: Int,
+    var distance: Double,
     val latitude: Double,
     val longitude: Double
 )
 
 @Dao
 interface CellInfoDao {
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(cellInfo: CellInfoEntity): Long
 
     @Query("SELECT * FROM cell_info ORDER BY id DESC")
@@ -528,6 +551,9 @@ interface CellInfoDao {
 
     @Query("SELECT * FROM cell_info WHERE cid = :cid")
     suspend fun getCellInfoByCid(cid: Int): List<CellInfoEntity>
+
+    @Query("SELECT * FROM cell_info WHERE cid = :cid ORDER BY id DESC LIMIT 1")
+    suspend fun getMostRecentCellInfoByCid(cid: Int): CellInfoEntity?
 }
 
 @Entity(tableName = "cell_towers")
@@ -553,7 +579,7 @@ interface CellTowerDao {
     suspend fun getCellTowerById(cellId: Int): CellTowerEntity?
 }
 
-@Database(entities = [CellInfoEntity::class, CellTowerEntity::class], version = 7)
+@Database(entities = [CellInfoEntity::class, CellTowerEntity::class], version = 9)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun cellInfoDao(): CellInfoDao
     abstract fun cellTowerDao(): CellTowerDao
